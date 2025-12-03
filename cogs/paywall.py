@@ -1,0 +1,219 @@
+"""Paywall bypass cog - auto-detection and slash commands."""
+
+import logging
+import re
+from urllib.parse import urlparse
+
+import aiohttp
+import discord
+import tldextract
+from discord import app_commands
+from discord.ext import commands
+
+import config
+
+log = logging.getLogger(__name__)
+
+# Simple URL pattern - matches http(s)://...
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+# Open Graph meta tag patterns
+OG_PATTERNS = {
+    "title": re.compile(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']*)["\']', re.I),
+    "description": re.compile(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']*)["\']', re.I),
+    "image": re.compile(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']*)["\']', re.I),
+    "site_name": re.compile(r'<meta[^>]*property=["\']og:site_name["\'][^>]*content=["\']([^"\']*)["\']', re.I),
+}
+# Fallback patterns (content before property)
+OG_PATTERNS_ALT = {
+    "title": re.compile(r'<meta[^>]*content=["\']([^"\']*)["\'][^>]*property=["\']og:title["\']', re.I),
+    "description": re.compile(r'<meta[^>]*content=["\']([^"\']*)["\'][^>]*property=["\']og:description["\']', re.I),
+    "image": re.compile(r'<meta[^>]*content=["\']([^"\']*)["\'][^>]*property=["\']og:image["\']', re.I),
+    "site_name": re.compile(r'<meta[^>]*content=["\']([^"\']*)["\'][^>]*property=["\']og:site_name["\']', re.I),
+}
+
+
+def extract_domain(url: str) -> str | None:
+    """Extract the registered domain from a URL."""
+    extracted = tldextract.extract(url)
+    return extracted.domain.lower() if extracted.domain else None
+
+
+def is_valid_url(url: str) -> bool:
+    """Check if string is a valid URL."""
+    try:
+        result = urlparse(url)
+        return all([result.scheme in ("http", "https"), result.netloc])
+    except Exception:
+        return False
+
+
+def bypass_url(url: str) -> str:
+    """Generate the removepaywalls.com bypass URL."""
+    return f"{config.BYPASS_URL}/{url}"
+
+
+async def fetch_og_metadata(url: str) -> dict[str, str | None]:
+    """Fetch Open Graph metadata from a URL."""
+    metadata = {"title": None, "description": None, "image": None, "site_name": None}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return metadata
+                # Only read first 50KB to find meta tags
+                html = await resp.text(errors="ignore")
+                html = html[:50000]
+    except Exception as e:
+        log.debug(f"Failed to fetch OG metadata from {url}: {e}")
+        return metadata
+
+    # Extract OG tags
+    for key, pattern in OG_PATTERNS.items():
+        match = pattern.search(html)
+        if not match:
+            match = OG_PATTERNS_ALT[key].search(html)
+        if match:
+            metadata[key] = match.group(1).strip()
+
+    return metadata
+
+
+def build_embed(url: str, metadata: dict[str, str | None]) -> discord.Embed:
+    """Build a Discord embed mimicking a link preview."""
+    bypass = bypass_url(url)
+
+    embed = discord.Embed(
+        title=metadata.get("title") or "Read Article",
+        url=bypass,
+        description=metadata.get("description"),
+        color=0x5865F2,  # Discord blurple
+    )
+
+    if metadata.get("site_name"):
+        embed.set_author(name=metadata["site_name"])
+
+    if metadata.get("image"):
+        embed.set_thumbnail(url=metadata["image"])
+
+    embed.set_footer(text="via removepaywalls.com")
+
+    return embed
+
+
+class PaywallCog(commands.Cog):
+    """Paywall bypass functionality."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.domains = config.load_domains()
+
+    # --- Auto-detection listener ---
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Ignore bots
+        if message.author.bot:
+            return
+
+        # Find URLs in message
+        urls = URL_PATTERN.findall(message.content)
+        if not urls:
+            return
+
+        # Check each URL against paywalled domains
+        for url in urls:
+            domain = extract_domain(url)
+            if domain and domain in self.domains:
+                metadata = await fetch_og_metadata(url)
+                embed = build_embed(url, metadata)
+                await message.reply(embed=embed, mention_author=False)
+                log.info(f"Auto-bypassed {domain} URL for {message.author}")
+                break  # One bypass per message
+
+    # --- Slash commands ---
+
+    @app_commands.command(name="bypass", description="Bypass paywall for any URL")
+    @app_commands.describe(url="The article URL to bypass")
+    async def bypass(self, interaction: discord.Interaction, url: str):
+        if not is_valid_url(url):
+            await interaction.response.send_message(
+                "Invalid URL. Please provide a full URL starting with http:// or https://",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        metadata = await fetch_og_metadata(url)
+        embed = build_embed(url, metadata)
+        await interaction.followup.send(embed=embed)
+        log.info(f"/bypass used by {interaction.user} for {url}")
+
+    # --- Paywalls command group ---
+
+    paywalls = app_commands.Group(name="paywalls", description="Manage paywalled domains")
+
+    @paywalls.command(name="list", description="List all tracked paywall domains")
+    async def paywalls_list(self, interaction: discord.Interaction):
+        if not self.domains:
+            await interaction.response.send_message("No domains tracked.", ephemeral=True)
+            return
+
+        # Format in columns
+        sorted_domains = sorted(self.domains)
+        domain_list = "  ".join(sorted_domains)
+        await interaction.response.send_message(
+            f"**Tracked domains ({len(self.domains)}):**\n```\n{domain_list}\n```",
+            ephemeral=True,
+        )
+
+    @paywalls.command(name="add", description="Add domain(s) to the paywall list")
+    @app_commands.describe(domains="Domain(s) to add, space-separated (e.g., 'nytimes wsj')")
+    async def paywalls_add(self, interaction: discord.Interaction, domains: str):
+        new_domains = {d.strip().lower() for d in domains.split() if d.strip()}
+        if not new_domains:
+            await interaction.response.send_message("No valid domains provided.", ephemeral=True)
+            return
+
+        added = new_domains - self.domains
+        self.domains.update(new_domains)
+        config.save_domains(self.domains)
+
+        if added:
+            await interaction.response.send_message(
+                f"Added: `{', '.join(sorted(added))}`"
+            )
+            log.info(f"{interaction.user} added domains: {added}")
+        else:
+            await interaction.response.send_message(
+                "Those domains are already tracked.", ephemeral=True
+            )
+
+    @paywalls.command(name="remove", description="Remove domain(s) from the paywall list")
+    @app_commands.describe(domains="Domain(s) to remove, space-separated")
+    async def paywalls_remove(self, interaction: discord.Interaction, domains: str):
+        to_remove = {d.strip().lower() for d in domains.split() if d.strip()}
+        if not to_remove:
+            await interaction.response.send_message("No valid domains provided.", ephemeral=True)
+            return
+
+        removed = to_remove & self.domains
+        self.domains -= to_remove
+        config.save_domains(self.domains)
+
+        if removed:
+            await interaction.response.send_message(
+                f"Removed: `{', '.join(sorted(removed))}`"
+            )
+            log.info(f"{interaction.user} removed domains: {removed}")
+        else:
+            await interaction.response.send_message(
+                "Those domains weren't being tracked.", ephemeral=True
+            )
+
+
+async def setup(bot: commands.Bot):
+    """Called by bot.load_extension()."""
+    await bot.add_cog(PaywallCog(bot))
