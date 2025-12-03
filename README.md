@@ -63,6 +63,18 @@ Uses [removepaywalls.com](https://removepaywalls.com) which searches web archive
 
 **Limitations**: Won't work for "hard paywalls" where content isn't loaded until login.
 
+## Known Limitations
+
+This bot was written for a small server with trusted users. If deploying to a larger or public server, be aware:
+
+- **No permission checks** — Any user can add/remove tracked domains
+- **No rate limiting** — Users could spam URLs and trigger many outbound requests
+- **HTTP session per request** — Not optimized for high volume
+- **Sync file I/O** — Domain list uses blocking file operations
+- **HTML entities** — OG metadata may contain unescaped HTML entities
+
+For production use with untrusted users, consider adding role-based permissions and rate limiting.
+
 ## License
 
 MIT
