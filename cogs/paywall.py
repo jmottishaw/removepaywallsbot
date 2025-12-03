@@ -138,9 +138,13 @@ class PaywallCog(commands.Cog):
     @app_commands.command(name="bypass", description="Bypass paywall for any URL")
     @app_commands.describe(url="The article URL to bypass")
     async def bypass(self, interaction: discord.Interaction, url: str):
+        # Add https:// if no scheme provided
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
         if not is_valid_url(url):
             await interaction.response.send_message(
-                "Invalid URL. Please provide a full URL starting with http:// or https://",
+                "Invalid URL.",
                 ephemeral=True,
             )
             return
@@ -214,6 +218,37 @@ class PaywallCog(commands.Cog):
             )
 
 
+class ErrorHandler(commands.Cog):
+    """Global error handler for the bot."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        bot.tree.on_error = self.on_app_command_error
+
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        """Handle slash command errors."""
+        if isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"Cooldown: try again in {error.retry_after:.1f}s"
+        elif isinstance(error, app_commands.MissingPermissions):
+            msg = "You don't have permission to use this command."
+        else:
+            log.exception(f"Unhandled error in {interaction.command}: {error}")
+            msg = "Something went wrong. Please try again."
+
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handle prefix command errors (if any)."""
+        log.exception(f"Command error: {error}")
+
+
 async def setup(bot: commands.Bot):
     """Called by bot.load_extension()."""
     await bot.add_cog(PaywallCog(bot))
+    await bot.add_cog(ErrorHandler(bot))
