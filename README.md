@@ -22,6 +22,21 @@ A minimal Discord bot that automatically bypasses article paywalls using [remove
 
 ### 2. Install Dependencies
 
+#### Using `uv` (Recommended)
+
+The bot uses inline script dependencies (PEP 723), so you can run it directly with `uv`:
+
+```bash
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Run the bot (uv will handle dependencies automatically)
+./bot.py
+# or: uv run python bot.py
+```
+
+#### Using pip (Alternative)
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate  # Windows
@@ -31,16 +46,63 @@ pip install -r requirements.txt
 
 ### 3. Configure
 
+Create a `.env` file:
+
 ```bash
-cp .env.example .env
-# Edit .env and add your bot token
+DISCORD_TOKEN=your_discord_bot_token_here
 ```
 
 ### 4. Run
 
 ```bash
+# Using uv (recommended)
+./bot.py
+
+# Or with Python
 python bot.py
 ```
+
+## Docker Deployment
+
+### Using Docker Compose (Recommended)
+
+1. Create a `.env` file with your Discord token:
+   ```bash
+   DISCORD_TOKEN=your_discord_bot_token_here
+   ```
+
+2. Create the data directory (for persistent domain storage):
+   ```bash
+   mkdir -p data
+   ```
+
+3. Build and run:
+   ```bash
+   docker-compose up -d
+   ```
+
+3. View logs:
+   ```bash
+   docker-compose logs -f
+   ```
+
+### Using Docker directly
+
+1. Build the image:
+   ```bash
+   docker build -t removepaywalls-bot .
+   ```
+
+2. Run the container:
+   ```bash
+   mkdir -p data
+   docker run -d \
+     --name removepaywalls-bot \
+     --restart unless-stopped \
+     -e DISCORD_TOKEN=your_discord_bot_token_here \
+     -v $(pwd)/data/paywalled_domains.json:/app/paywalled_domains.json \
+     removepaywalls-bot
+   ```
 
 ### 5. Invite Bot to Server
 
