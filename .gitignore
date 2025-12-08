@@ -3,4 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 paywalled_domains.json
+data/
 .venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
