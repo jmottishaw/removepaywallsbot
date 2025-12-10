@@ -120,9 +120,9 @@ async def fetch_og_metadata(url: str) -> dict[str, str | None]:
                     # Fallback: extract title from URL slug
                     metadata["title"] = title_from_url(url)
                     return metadata
-                # Only read first 50KB to find meta tags
+                # Read up to 100KB to find meta/title tags (some sites have lots of inline JS)
                 html = await resp.text(errors="ignore")
-                html = html[:50000]
+                html = html[:100000]
     except (aiohttp.ClientError, TimeoutError) as e:
         log.debug("Failed to fetch OG metadata from %s: %s", url, e)
         metadata["title"] = title_from_url(url)
@@ -136,9 +136,13 @@ async def fetch_og_metadata(url: str) -> dict[str, str | None]:
         if match:
             metadata[key] = match.group(1).strip()
 
-    # Fallback title from URL if OG title missing
+    # Fallback title: try HTML <title> tag, then URL slug
     if not metadata["title"]:
-        metadata["title"] = title_from_url(url)
+        title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+        if title_match:
+            metadata["title"] = title_match.group(1).strip()
+        else:
+            metadata["title"] = title_from_url(url)
 
     return metadata
 
