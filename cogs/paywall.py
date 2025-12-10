@@ -80,22 +80,52 @@ def bypass_url(url: str) -> str:
     return f"{config.BYPASS_URL}/{url}"
 
 
+def title_from_url(url: str) -> str | None:
+    """Extract a readable title from URL slug as fallback."""
+    try:
+        path = urlparse(url).path
+        # Get last meaningful segment
+        segments = [s for s in path.split("/") if s and not s.startswith("?")]
+        if not segments:
+            return None
+        slug = segments[-1]
+        # Remove file extensions and IDs
+        slug = re.sub(r"\.(html?|php|aspx?)$", "", slug)
+        slug = re.sub(r"-[a-f0-9]{8,}$", "", slug)  # Remove trailing hash IDs
+        # Convert slug to title
+        title = slug.replace("-", " ").replace("_", " ")
+        return title.title() if title else None
+    except Exception:
+        return None
+
+
 async def fetch_og_metadata(url: str) -> dict[str, str | None]:
     """Fetch Open Graph metadata from a URL."""
     metadata = {"title": None, "description": None, "image": None, "site_name": None}
 
+    # Extract domain for site_name fallback
+    domain = extract_domain(url)
+    if domain:
+        metadata["site_name"] = domain.title()
+
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+            # Use Discordbot UA - most sites whitelist social crawlers
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
+            }
             timeout = aiohttp.ClientTimeout(total=5)
             async with session.get(url, headers=headers, timeout=timeout) as resp:
                 if resp.status != HTTP_OK:
+                    # Fallback: extract title from URL slug
+                    metadata["title"] = title_from_url(url)
                     return metadata
                 # Only read first 50KB to find meta tags
                 html = await resp.text(errors="ignore")
                 html = html[:50000]
-    except (aiohttp.ClientError, aiohttp.ClientTimeout) as e:
+    except (aiohttp.ClientError, TimeoutError) as e:
         log.debug("Failed to fetch OG metadata from %s: %s", url, e)
+        metadata["title"] = title_from_url(url)
         return metadata
 
     # Extract OG tags
@@ -105,6 +135,10 @@ async def fetch_og_metadata(url: str) -> dict[str, str | None]:
             match = OG_PATTERNS_ALT[key].search(html)
         if match:
             metadata[key] = match.group(1).strip()
+
+    # Fallback title from URL if OG title missing
+    if not metadata["title"]:
+        metadata["title"] = title_from_url(url)
 
     return metadata
 
@@ -124,7 +158,7 @@ def build_embed(url: str, metadata: dict[str, str | None]) -> discord.Embed:
         embed.set_author(name=metadata["site_name"])
 
     if metadata.get("image"):
-        embed.set_thumbnail(url=metadata["image"])
+        embed.set_image(url=metadata["image"])
 
     embed.set_footer(text="via removepaywalls.com")
 
